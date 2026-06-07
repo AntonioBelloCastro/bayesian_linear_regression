@@ -10,7 +10,6 @@ def update_parameters(y_tilde, X, sigma2_prev, tau2_prev, lambda_sq):
     
     # ---------------------------------------------------------
     # 1. Update beta
-    # ---------------------------------------------------------
 
     D_tau_inv = np.diag(1.0 / tau2_prev)
     
@@ -32,7 +31,6 @@ def update_parameters(y_tilde, X, sigma2_prev, tau2_prev, lambda_sq):
     
     # ---------------------------------------------------------
     # 2. Update sigma^2
-    # ---------------------------------------------------------
     residuals = y_tilde - X @ beta_t
     RSS = residuals.T @ residuals
     
@@ -46,11 +44,9 @@ def update_parameters(y_tilde, X, sigma2_prev, tau2_prev, lambda_sq):
     
     # ---------------------------------------------------------
     # 3. Update tau^2
-    # ---------------------------------------------------------
     tau2_t = np.zeros(p)
     
     for j in range(p):
-        # Safeguard against division by exactly zero if beta is extremely small
         beta_j_sq = max(beta_t[j]**2, 1e-10)
         
         # mu = sqrt( (lambda^2 * sigma^2) / beta_j^2 )
@@ -68,14 +64,12 @@ def update_parameters(y_tilde, X, sigma2_prev, tau2_prev, lambda_sq):
 def standarized_centered_X_y(X,y):
     X_covariates_only = X[:, 1:] 
 
-    # Now run the exact same standardizing code on this new matrix!
     X_mean = np.mean(X_covariates_only, axis=0)
     X_std = np.std(X_covariates_only, axis=0)
 
     X_std[X_std == 0] = 1.0 
 
     X_stdized = (X_covariates_only - X_mean) / X_std
-
 
     y_mean = np.mean(y)
     y_tilde = y - y_mean
@@ -88,7 +82,7 @@ def standarized_centered_X_y(X,y):
 def bayesian_lasso_hyp(y_tilde, X, r=1.0, delta=0.1, T=11000, B=1000,random_seed=2026):
     """
     Algorithm 3: Bayesian Lasso Gibbs Sampler with lambda hyperprior
-    Incorporates the exact t=0 initialization dependency chain.
+    t=0 Casella Initialisation
     """
     np.random.seed(random_seed)
     n, p = X.shape
@@ -182,7 +176,7 @@ def bayesian_lasso_em(y_tilde, X, epsilon=1e-6, M=50, K=200, T=11000, B=1000,ran
         if abs(lambda_next - lambda_curr) < epsilon:
             lambda_curr = lambda_next
             lambda_history.append(lambda_curr)
-            print(f" -> EM Converged at iteration k={k} to lambda={lambda_curr:.4f}")
+            print(f" EM Converged at iteration k={k} to lambda={lambda_curr:.4f}")
             break
             
         lambda_curr = lambda_next
@@ -194,9 +188,8 @@ def bayesian_lasso_em(y_tilde, X, epsilon=1e-6, M=50, K=200, T=11000, B=1000,ran
     lambda_eb = lambda_curr
     lambda_sq_eb = lambda_eb**2
 
-    # =========================================================
+    # ------------------------------------------------
     # Phase 2: Final Gibbs Sampler with fixed lambda
-    # =========================================================
     print(f"Starting Phase 2: Posterior Inference (T={T} iterations)...")
     
     # Arrays to store final posterior samples
