@@ -1,5 +1,5 @@
-import numpy as np 
-from scipy.stats import t,invgamma
+import numpy as np
+from scipy.stats import invgamma, gamma
 
 
 def update_parameters(y_tilde, X, sigma2_prev, tau2_prev, lambda_sq):
@@ -83,58 +83,142 @@ def standarized_centered_X_y(X,y):
     return X_stdized,y_tilde
 
 
-import numpy as np
-from scipy.stats import invgamma
 
-def run_gibbs_fixed_lambda(y_tilde, X, lambda_fixed, T=10000, B=1000,random_seed=2026):
+
+def bayesian_lasso_hyp(y_tilde, X, r=1.0, delta=0.1, T=11000, B=1000,random_seed=2026):
+    """
+    Algorithm 3: Bayesian Lasso Gibbs Sampler with lambda hyperprior
+    Incorporates the exact t=0 initialization dependency chain.
+    """
     np.random.seed(random_seed)
-    """
-    Gibbs Sampler for Bayesian Lasso with a fixed penalty parameter lambda.
-    
-    Parameters:
-    -----------
-    y_tilde   : Centered response vector (n,)
-    X         : Standardized design matrix (n, p)
-    lambda_fixed : The fixed lambda value (e.g., from Empirical Bayes Phase 1)
-    T         : Total number of iterations
-    B         : Burn-in iterations
-    
-    Returns:
-    --------
-    results : dict containing posterior samples of beta, sigma2, and tau2
-    """
     n, p = X.shape
-    lambda_sq = lambda_fixed**2
     
-    # 1. Initialize parameters
-    # Starting with OLS-like estimates or zeros
-    beta_curr = np.zeros(p)
-    sigma2_curr = 1.0
-    tau2_curr = np.ones(p) # Critical to start > 0 for D_tau_inv
+    # Arrays to store the values of each parameter for each iteration
+    beta_samples = np.zeros((T, p))
+    sigma2_samples = np.zeros(T)
+    tau2_samples = np.zeros((T, p))
+    lambda_sq_samples = np.zeros(T) 
     
-    # 2. Storage for samples (only storing T-B samples)
-    num_samples = T - B
-    beta_samples = np.zeros((num_samples, p))
-    sigma2_samples = np.zeros(num_samples)
-    tau2_samples = np.zeros((num_samples, p))
+    XtX_inv = np.linalg.pinv(X.T @ X)
+    beta_curr = XtX_inv @ X.T @ y_tilde
     
-    print(f"Running Gibbs Sampler (T={T}, B={B}) with fixed λ={lambda_fixed:.4f}...")
+    residuals_ols = y_tilde - X @ beta_curr
+    sigma2_curr = (residuals_ols.T @ residuals_ols) / (n - p - 1)
     
+    sum_abs_beta = np.sum(np.abs(beta_curr))
+    lambda_curr = (p * np.sqrt(sigma2_curr)) / sum_abs_beta
+    lambda_sq_curr = lambda_curr**2
+    
+    tau2_curr = np.zeros(p)
+    for j in range(p):
+        beta_j_sq = max(beta_curr[j]**2, 1e-10)
+        mu_invgauss = np.sqrt((lambda_sq_curr * sigma2_curr) / beta_j_sq)
+        inv_tau2_j = np.random.wald(mean=mu_invgauss, scale=lambda_sq_curr)
+        tau2_curr[j] = 1.0 / inv_tau2_j
+
     for t in range(T):
-        # Apply the transition kernel (your update_parameters function)
+        
         beta_curr, sigma2_curr, tau2_curr = update_parameters(
-            y_tilde, X, beta_curr, sigma2_curr, tau2_curr, lambda_sq
+            y_tilde, X, sigma2_curr, tau2_curr, lambda_sq_curr
         )
         
-        # 3. Store results only after burn-in
-        if t >= B:
-            idx = t - B
-            beta_samples[idx, :] = beta_curr
-            sigma2_samples[idx] = sigma2_curr
-            tau2_samples[idx, :] = tau2_curr
-            
+        shape_param = p + r
+        rate_param = 0.5 * np.sum(tau2_curr) + delta
+        scale_param = 1.0 / rate_param
+        lambda_sq_curr = gamma.rvs(a=shape_param, scale=scale_param)
+        
+        beta_samples[t, :] = beta_curr
+        sigma2_samples[t] = sigma2_curr
+        tau2_samples[t, :] = tau2_curr
+        lambda_sq_samples[t] = lambda_sq_curr
+        
     return {
-        'beta': beta_samples,
-        'sigma2': sigma2_samples,
-        'tau2': tau2_samples
+        'beta': beta_samples[B:],
+        'sigma2': sigma2_samples[B:],
+        'tau2': tau2_samples[B:],
+        'lambda_sq': lambda_sq_samples[B:]
+    }
+
+
+def bayesian_lasso_em(y_tilde, X, epsilon=1e-6, M=50, K=200, T=11000, B=1000,random_seed=2026):
+    np.random.seed(random_seed)
+    """
+    Algorithm 2: Bayesian Lasso with Pure Monte Carlo EM for lambda
+    """
+    n, p = X.shape
+    
+    XtX_inv = np.linalg.pinv(X.T @ X)
+    beta_curr = XtX_inv @ X.T @ y_tilde
+    
+    residuals_ols = y_tilde - X @ beta_curr
+    sigma2_curr = (residuals_ols.T @ residuals_ols) / (n - p - 1)
+    
+    sum_abs_beta = np.sum(np.abs(beta_curr))
+    lambda_curr = (p * np.sqrt(sigma2_curr)) / sum_abs_beta
+    lambda_sq_curr = lambda_curr**2
+    
+    tau2_curr = np.zeros(p)
+    for j in range(p):
+        beta_j_sq = max(beta_curr[j]**2, 1e-10)
+        mu_invgauss = np.sqrt((lambda_sq_curr * sigma2_curr) / beta_j_sq)
+        inv_tau2_j = np.random.wald(mean=mu_invgauss, scale=lambda_sq_curr)
+        tau2_curr[j] = 1.0 / inv_tau2_j
+
+    lambda_history = [lambda_curr]
+    
+    for k in range(1, K + 1):
+        
+        tau2_samples_E_step = np.zeros((M, p))
+        
+        for m in range(M):
+            beta_curr, sigma2_curr, tau2_curr = update_parameters(
+                y_tilde, X, sigma2_curr, tau2_curr, lambda_sq_curr
+            )
+            tau2_samples_E_step[m, :] = tau2_curr
+            
+        E_tau2 = np.mean(tau2_samples_E_step, axis=0)
+        lambda_next = np.sqrt((2.0 * p) / np.sum(E_tau2))
+        
+        if abs(lambda_next - lambda_curr) < epsilon:
+            lambda_curr = lambda_next
+            lambda_history.append(lambda_curr)
+            print(f" -> EM Converged at iteration k={k} to lambda={lambda_curr:.4f}")
+            break
+            
+        lambda_curr = lambda_next
+        lambda_sq_curr = lambda_curr**2
+        lambda_history.append(lambda_curr)
+        
+
+    # Final lambda estimate
+    lambda_eb = lambda_curr
+    lambda_sq_eb = lambda_eb**2
+
+    # =========================================================
+    # Phase 2: Final Gibbs Sampler with fixed lambda
+    # =========================================================
+    print(f"Starting Phase 2: Posterior Inference (T={T} iterations)...")
+    
+    # Arrays to store final posterior samples
+    beta_samples = np.zeros((T, p))
+    sigma2_samples = np.zeros(T)
+    tau2_samples = np.zeros((T, p))
+    
+    
+    for t in range(T):
+        beta_curr, sigma2_curr, tau2_curr = update_parameters(
+            y_tilde, X, sigma2_curr, tau2_curr, lambda_sq_eb
+        )
+        
+        beta_samples[t, :] = beta_curr
+        sigma2_samples[t] = sigma2_curr
+        tau2_samples[t, :] = tau2_curr
+
+    # Return post burn-in samples
+    return {
+        'lambda_EB': lambda_eb,
+        'lambda_history': np.array(lambda_history),
+        'beta_samples': beta_samples[B:],   
+        'sigma2_samples': sigma2_samples[B:],
+        'tau2_samples': tau2_samples[B:]
     }
